@@ -5,14 +5,8 @@ export default css`
     position: relative;
   }
   select {
-    background-color: inherit;
-    color: inherit;
     width: 100%;
     border-radius: 4px;
-  }
-  option {
-    color: currentColor;
-    background-color: var(--primary-color, currentColor);
   }
   input[type="range"],
   input[type="text"] {
@@ -72,7 +66,24 @@ export default css`
     margin: auto;
     display: flex;
   }
-
+  .climate-wrap{
+    width: 100%;
+    margin: 10px 0 10px 0;
+  }
+  .climate-row {
+    width: 100%;
+    display: inline-flex;
+    flex-wrap: wrap;
+    text-align: left;
+  }
+  .climate-row > select{
+    width: 50%;
+  }
+  .climate-row > label{
+    align-content: center;
+    width: 150px;
+  }
+    
   input[type="color"]::-webkit-color-swatch-wrapper {
     padding: 0 !important;
   }

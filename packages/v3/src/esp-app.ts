@@ -63,6 +63,7 @@ export default class EspApp extends LitElement {
   @state() ping: number = 0;
   @state() connected: boolean = true;
   @state() lastUpdate: number = 0;
+  private _hasJsonUptime: boolean = false;
   @query("#beat")
   beat!: HTMLSpanElement;
 
@@ -99,14 +100,35 @@ export default class EspApp extends LitElement {
     this.scheme = this.schemeDefault();
     window.source.addEventListener("ping", (e: MessageEvent) => {
       if (e.data?.length) {
-        this.setConfig(JSON.parse(e.data));
-        this.requestUpdate();
+        const data = JSON.parse(e.data);
+        if (data.title !== undefined) {
+          // Full config: {"title":"...","comment":"...","ota":true,"log":true,"lang":"en","uptime":123456}
+          this.setConfig(data);
+          this.requestUpdate();
+        }
+        if (data.uptime !== undefined) {
+          // New firmware sends uptime in seconds in JSON data (overflow-safe)
+          // Full config (on connect): {"title":"...","uptime":123456}
+          // Interval ping: {"uptime":123456}
+          this._hasJsonUptime = true;
+          this._setUptime(data.uptime * 1000);
+        } else {
+          // Old firmware sends uptime in lastEventId (32-bit, may overflow after ~49 days)
+          this._updateUptime(e);
+        }
+      } else {
+        // Old firmware interval ping: empty data, uptime in lastEventId
+        this._updateUptime(e);
       }
-      this._updateUptime(e);
       this.lastUpdate = Date.now();
     });
     window.source.addEventListener("log", (e: MessageEvent) => {
-      this._updateUptime(e);
+      // Old firmware sends uptime in lastEventId for log events
+      // Skip when new firmware provides uptime via JSON ping to avoid
+      // millis() overwriting the overflow-safe seconds-based value
+      if (!this._hasJsonUptime) {
+        this._updateUptime(e);
+      }
       this.lastUpdate = Date.now();
     });
     window.source.addEventListener("state", (e: MessageEvent) => {
@@ -147,7 +169,7 @@ export default class EspApp extends LitElement {
   }
 
   uptime() {
-    return `${getRelativeTime(-this.ping | 0)}`;
+    return `${getRelativeTime(-this.ping || 0)}`;
   }
 
   renderOta() {
@@ -193,7 +215,7 @@ export default class EspApp extends LitElement {
     return html`
       <header>
         <a href="https://esphome.io/web-api" id="logo" title="${this.version}">
-          <esp-logo></esp-logo>
+          <esp-logo style="width: 52px; height: 40px;"></esp-logo>
         </a>
         <iconify-icon
           .icon="${!!this.connected ? "mdi:circle" : "mdi:circle-off-outline"}"
@@ -215,26 +237,7 @@ export default class EspApp extends LitElement {
         </a>
         ${this.renderTitle()}
       </header>
-      <div class="flex-grid-half">
-        <section
-          id="col_entities"
-          class="col"
-        >
-          <solar-storage-ui number="1"></solar-storage-ui>
-        </section>
-        <section
-          id="col_entities"
-          class="col"
-        >
-          <solar-storage-ui number="2"></solar-storage-ui>
-        </section>
-        <section
-          id="col_entities"
-          class="col"
-        >
-          <solar-storage-ui number="3"></solar-storage-ui>
-        </section>
-      </div>
+      <solar-storage-dashboard></solar-storage-dashboard>
       <main class="flex-grid-half" @toggle-layout="${this._handleLayoutToggle}">
         <section
           id="col_entities"
@@ -248,11 +251,15 @@ export default class EspApp extends LitElement {
     `;
   }
 
+  private _setUptime(uptime: number) {
+    this.ping = uptime;
+    this.connected = true;
+    this.requestUpdate();
+  }
+
   private _updateUptime(e: MessageEvent) {
     if (e.lastEventId) {
-      this.ping = parseInt(e.lastEventId);
-      this.connected = true;
-      this.requestUpdate();
+      this._setUptime(parseInt(e.lastEventId));
     }
   }
 

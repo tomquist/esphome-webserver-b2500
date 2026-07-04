@@ -89,6 +89,9 @@ export default defineConfig({
       "/text": proxy_target,
       "/date": proxy_target,
       "/time": proxy_target,
+      "/valve": proxy_target,
+      "/water_heater": proxy_target,
+      "/infrared": proxy_target,
     },
   },
 });
