@@ -651,6 +651,9 @@ function doAction(id: string, action: string) {
   id = parts.slice(1).join("-");
   fetch(`${getBasePath()}/${domain}/${id}/${action}`, {
     method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
     body: "true",
   }).then((r) => {
     console.log(r);
