@@ -101,29 +101,33 @@ export class SolarStorageUI extends LitElement {
           break;
         case "out_1_-_active":
           this.outputEnabled1 = data.value;
-          break;
-        case "out_1_-_power":
-          this.toggleOutput1 =
-            data.value != null
-              ? () =>
-                  doAction(
-                    data.id,
-                    data.value === true ? "turn_off" : "turn_on"
-                  )
-              : undefined;
+          // "Out X - Active" is exposed both as a read-only binary_sensor and
+          // as a controllable switch sharing the same object id. Only the
+          // switch entity can be toggled, so drive the action from it (and use
+          // its data.id, which points at the switch endpoint).
+          if (sensorType === "switch") {
+            this.toggleOutput1 =
+              data.value != null
+                ? () =>
+                    doAction(
+                      data.id,
+                      data.value === true ? "turn_off" : "turn_on"
+                    )
+                : undefined;
+          }
           break;
         case "out_2_-_active":
           this.outputEnabled2 = data.value;
-          break;
-        case "out_2_-_power":
-          this.toggleOutput2 =
-            data.value != null
-              ? () =>
-                  doAction(
-                    data.id,
-                    data.value === true ? "turn_off" : "turn_on"
-                  )
-              : undefined;
+          if (sensorType === "switch") {
+            this.toggleOutput2 =
+              data.value != null
+                ? () =>
+                    doAction(
+                      data.id,
+                      data.value === true ? "turn_off" : "turn_on"
+                    )
+                : undefined;
+          }
           break;
         case `generation`:
           this.deviceGeneration = data.value;
