@@ -4,53 +4,123 @@ import cssTab from "./css/tab";
 import "./input-modal";
 import "./wattage-status-box";
 
-function escapeRegex(str: string) {
-  return str.replace(/[/\-\\^$*+?.()|[\]{}]/g, "\\$&");
+// Maximum number of B2500 storages the dashboard will render.
+export const MAX_STORAGES = 9;
+
+// A state event parsed into the pieces the dashboard needs: which storage
+// (sub-)device it belongs to, the normalized sensor key, the raw event data and
+// the path used to POST control actions back to the device.
+interface ParsedEntity {
+  device: string; // sub-device name, or "#<index>" for legacy object ids
+  domain: string; // sensor | switch | number | binary_sensor | text_sensor | ...
+  key: string; // normalized sensor key, e.g. "depth_of_discharge"
+  actionBase: string; // POST target relative to the base path (no leading slash)
+  data: any;
 }
 
-// Maximum number of B2500 storages the dashboard can display. Kept in sync
-// with getMaxBleDevices() in the esphome-b2500 config generator.
-export const MAX_STORAGES = 9;
+// Sensor keys the storage card understands. Also used to recognize which
+// sub-devices are B2500 storages worth rendering a card for.
+export const KNOWN_STORAGE_KEYS = new Set<string>([
+  "pv_1_-_active", "pv_2_-_active", "in_1_-_power", "in_2_-_power", "scene",
+  "out_1_-_power", "out_2_-_power", "total_power_out", "battery_level",
+  "battery_capacity", "last_response", "depth_of_discharge",
+  "discharge_threshold", "temperature_1", "temperature_2", "out_1_-_active",
+  "out_2_-_active", "generation", "name", "device_type", "device_id",
+  "mac_address", "ble_connected", "wifi_connected", "mqtt_connected",
+]);
+
+// Sanitize an ESPHome entity name to its object-id form (lowercase; runs of
+// characters outside [a-z0-9-] become "_"), then strip the legacy
+// "B2500 - N - Store:" prefix (which sanitizes to a leading "...__") so that
+// both legacy and simplified entity names collapse to the same key, e.g.
+// "depth_of_discharge".
+function sanitizeKey(rawName: string): string {
+  // ESPHome replaces every character outside [a-z0-9_-] with "_" individually
+  // (no run collapsing), so "Store: Depth of Discharge" -> "store__depth_of...".
+  // The doubled underscore from the legacy ": " separator is what lets us strip
+  // the "B2500 - N - Store:" prefix back down to the bare sensor key.
+  let s = rawName.toLowerCase().replace(/[^a-z0-9-]/g, "_");
+  const sep = s.lastIndexOf("__");
+  if (sep >= 0) s = s.slice(sep + 2);
+  return s.replace(/^_+|_+$/g, "");
+}
+
+const LEGACY_ID_RE =
+  /^(sensor|switch|text_sensor|text|number|binary_sensor|button)-b2500_-_(\d+)_-_.*__(.*)$/;
+
+// Turn a raw state event into a ParsedEntity, or null if it is not a B2500
+// storage entity. Prefers the modern "name_id" (domain/device/name), so it works
+// with ESPHome sub-devices and simplified entity names; falls back to the legacy
+// object-id format ("<domain>-b2500_-_<n>_-_<store>__<key>") for older firmware.
+export function parseStorageEntity(data: any): ParsedEntity | null {
+  if (data == null || typeof data !== "object") return null;
+
+  const nameId: unknown = data.name_id;
+  if (typeof nameId === "string") {
+    const parts = nameId.split("/");
+    // Sub-device entities are domain/device/name (>= 3 parts). Entities without
+    // a device (domain/name) are global, not per-storage, and are ignored.
+    if (parts.length >= 3) {
+      const domain = parts[0];
+      const device = parts[1];
+      const rawName = parts.slice(2).join("/");
+      return {
+        device,
+        domain,
+        key: sanitizeKey(rawName),
+        // Hierarchical endpoint; required because simplified object ids collide
+        // across devices (every storage exposes e.g. "out_1_-_active").
+        actionBase: `${domain}/${encodeURIComponent(device)}/${encodeURIComponent(
+          rawName
+        )}`,
+        data,
+      };
+    }
+    return null;
+  }
+
+  const id: unknown = data.id;
+  if (typeof id === "string") {
+    const m = id.match(LEGACY_ID_RE);
+    if (m) {
+      const domain = m[1];
+      // Legacy object ids already embed the storage, so they are unique and can
+      // be posted to directly.
+      return {
+        device: `#${m[2]}`,
+        domain,
+        key: m[3],
+        actionBase: `${domain}/${id.slice(domain.length + 1)}`,
+        data,
+      };
+    }
+  }
+  return null;
+}
 
 @customElement("solar-storage-ui")
 export class SolarStorageUI extends LitElement {
-  @property({ type: String }) number = "0";
+  // The storage (sub-)device this card renders (a sub-device name, or "#<index>"
+  // for legacy object ids).
+  @property({ type: String }) device = "";
+  // All known entities for this device, keyed by sensor key. Supplied by the
+  // container so the card never subscribes to the event stream itself and
+  // therefore cannot miss the initial burst of states.
+  @property({ attribute: false }) entities: Map<string, ParsedEntity> = new Map();
   // Reflected so the container grid can collapse storages that have not
-  // reported any data yet (see :host(:not([active])) below).
+  // reported enough data to render yet (see :host(:not([active])) below).
   @property({ type: Boolean, reflect: true }) active = false;
 
-  connectedCallback() {
-    super.connectedCallback();
-    window.source?.addEventListener("state", (e: Event) => {
-      const messageEvent = e as MessageEvent;
-      const data = JSON.parse(messageEvent.data);
-      // The entity id is derived from the ESPHome entity name, e.g.
-      // "B2500 - 2 - MyStore: Depth of Discharge" -> object id
-      // "b2500_-_2_-_mystore__depth_of_discharge". The trailing segment after
-      // "__" (the `id` capture below) is the sanitized entity name and must be
-      // matched exactly in the switch (e.g. "depth_of_discharge", not "dod").
-      // Examples:
-      // sensor-b2500_-_2_-_mystore__temperature_1
-      // number-b2500_-_2_-_mystore__depth_of_discharge
-      // switch-b2500_-_1_-_mystore__out_1_-_active
-      // text_sensor-b2500_-_1_-_mystore__mac_address
-      const regexp = new RegExp(
-        `^(sensor|switch|text(_sensor)?|number|binary_sensor|button)-b2500_-_(\\d)_-_(.*)__(.*)$`
-      );
-      if (typeof data.id !== "string") {
-        return;
-      }
-      const match = data.id.match(regexp);
-      if (!match) {
-        return;
-      }
-      const [_, sensorType, __, deviceIdx, name, id] = match;
-      if (deviceIdx !== this.number) {
-        return;
-      }
+  willUpdate(changed: Map<string, unknown>) {
+    if (changed.has("entities")) {
+      this.entities.forEach((p, key) => this.applyEntity(key, p));
+      this.active = this.deviceType != null;
+    }
+  }
 
-
-      switch (id) {
+  private applyEntity(id: string, p: ParsedEntity) {
+    const data = p.data;
+    switch (id) {
         case `pv_1_-_active`:
           this.pv1Active = data.value;
           break;
@@ -88,14 +158,14 @@ export class SolarStorageUI extends LitElement {
           this.dod = data.value;
           this.dodMin = data.min_value;
           this.dodMax = data.max_value;
-          this.setDoD = (dod: number) => doAction(data.id, "set?value=" + dod);
+          this.setDoD = (dod: number) => doAction(p.actionBase, "set?value=" + dod);
           break;
         case `discharge_threshold`:
           this.dischargeThreshold = data.value;
           this.dischargeThresholdMin = data.min_value;
           this.dischargeThresholdMax = data.max_value;
           this.setDischargeThreshold = (threshold: number) =>
-            doAction(data.id, "set?value=" + threshold);
+            doAction(p.actionBase, "set?value=" + threshold);
           break;
         case "temperature_1":
           this.temperature1 = data.value;
@@ -107,14 +177,14 @@ export class SolarStorageUI extends LitElement {
           this.outputEnabled1 = data.value;
           // "Out X - Active" is exposed both as a read-only binary_sensor and
           // as a controllable switch sharing the same object id. Only the
-          // switch entity can be toggled, so drive the action from it (and use
-          // its data.id, which points at the switch endpoint).
-          if (sensorType === "switch") {
+          // switch entity can be toggled, so drive the action from it (its
+          // actionBase points at the switch endpoint).
+          if (p.domain === "switch") {
             this.toggleOutput1 =
               data.value != null
                 ? () =>
                     doAction(
-                      data.id,
+                      p.actionBase,
                       data.value === true ? "turn_off" : "turn_on"
                     )
                 : undefined;
@@ -122,12 +192,12 @@ export class SolarStorageUI extends LitElement {
           break;
         case "out_2_-_active":
           this.outputEnabled2 = data.value;
-          if (sensorType === "switch") {
+          if (p.domain === "switch") {
             this.toggleOutput2 =
               data.value != null
                 ? () =>
                     doAction(
-                      data.id,
+                      p.actionBase,
                       data.value === true ? "turn_off" : "turn_on"
                     )
                 : undefined;
@@ -158,10 +228,14 @@ export class SolarStorageUI extends LitElement {
           this.mqtt = data.value;
           break;
         default:
-          console.warn(`Unknown sensor: ${id}`);
+          // Not a sensor this card renders; ignore.
           break;
       }
-    });
+  }
+
+  private get _label(): string {
+    if (this.device && !this.device.startsWith("#")) return this.device;
+    return `Storage ${this.device.replace(/^#/, "") || "?"}`;
   }
 
   @state() sunlightStatus?: string;
@@ -523,11 +597,6 @@ export class SolarStorageUI extends LitElement {
     return html`<span class="cloud"></span>`;
   }
 
-  willUpdate() {
-    // A storage becomes visible once it has reported its device type.
-    this.active = this.deviceType != null;
-  }
-
   render() {
     if (this.deviceType == null) {
       return;
@@ -537,7 +606,7 @@ export class SolarStorageUI extends LitElement {
     let out2 = `${this.outputPower2 ?? "-"}W`;
     const deviceInfo = this[this.deviceInfoToShow];
     return html`
-      <div class="tab-header">Storage${this.number}</div>
+      <div class="tab-header">${this._label}</div>
       <div class="tab-container">
         <div class="info" @click=${this._toggleDeviceInfo}>
           <div>${deviceInfo ? deviceInfo : ""}</div>
@@ -664,13 +733,17 @@ export class SolarStorageUI extends LitElement {
   }
 }
 
-// Container that lays out all potential B2500 storages in a responsive grid.
-// Every storage is mounted up front so it subscribes to the state stream from
-// the start (and never misses one-shot events such as device_type); storages
-// without data collapse themselves via :host(:not([active])), so only the
-// storages that actually report data are visible.
+// Discovers B2500 storages from the state stream and lays them out in a
+// responsive grid. The container owns all storage state: it subscribes once (so
+// it never misses the initial burst of states) and hands each card a map of its
+// entities. Cards are therefore purely presentational and can be created lazily
+// as devices are discovered without missing any data. Devices are keyed by their
+// ESPHome sub-device, so this works with both legacy and simplified entity names.
 @customElement("solar-storage-dashboard")
 export class SolarStorageDashboard extends LitElement {
+  // device -> (sensor key -> parsed entity). Insertion order = discovery order.
+  @state() private _devices: Map<string, Map<string, ParsedEntity>> = new Map();
+
   static styles = css`
     :host {
       display: grid;
@@ -686,11 +759,45 @@ export class SolarStorageDashboard extends LitElement {
     }
   `;
 
+  connectedCallback() {
+    super.connectedCallback();
+    window.source?.addEventListener("state", this._onState);
+  }
+
+  disconnectedCallback() {
+    window.source?.removeEventListener("state", this._onState);
+    super.disconnectedCallback();
+  }
+
+  private _onState = (e: Event) => {
+    let data: any;
+    try {
+      data = JSON.parse((e as MessageEvent).data);
+    } catch {
+      return;
+    }
+    const p = parseStorageEntity(data);
+    if (!p || !KNOWN_STORAGE_KEYS.has(p.key)) return;
+
+    let entities = this._devices.get(p.device);
+    if (!entities) {
+      if (this._devices.size >= MAX_STORAGES) return;
+      entities = new Map();
+      this._devices.set(p.device, entities);
+    }
+    entities.set(p.key, p);
+    // Hand the card a fresh Map instance so Lit sees the property change.
+    this._devices.set(p.device, new Map(entities));
+    this._devices = new Map(this._devices);
+  };
+
   render() {
-    return html`${Array.from(
-      { length: MAX_STORAGES },
-      (_, i) =>
-        html`<solar-storage-ui number="${i + 1}"></solar-storage-ui>`
+    return html`${[...this._devices.entries()].map(
+      ([device, entities]) =>
+        html`<solar-storage-ui
+          .device=${device}
+          .entities=${entities}
+        ></solar-storage-ui>`
     )}`;
   }
 }
@@ -700,11 +807,12 @@ export function getBasePath() {
   return str.endsWith("/") ? str.slice(0, -1) : str;
 }
 
-function doAction(id: string, action: string) {
-  const parts = id.split("-");
-  const domain = parts[0];
-  id = parts.slice(1).join("-");
-  fetch(`${getBasePath()}/${domain}/${id}/${action}`, {
+// `actionBase` is the entity path relative to the base path (e.g.
+// "number/My%20Store/Depth%20of%20Discharge" or the legacy
+// "switch/b2500_-_1_-_store__out_1_-_active"). `action` is the trailing verb,
+// optionally with a query string (e.g. "turn_on" or "set?value=80").
+function doAction(actionBase: string, action: string) {
+  fetch(`${getBasePath()}/${actionBase}/${action}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
