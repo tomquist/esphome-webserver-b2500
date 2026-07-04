@@ -24,12 +24,16 @@ export class SolarStorageUI extends LitElement {
     window.source?.addEventListener("state", (e: Event) => {
       const messageEvent = e as MessageEvent;
       const data = JSON.parse(messageEvent.data);
+      // The entity id is derived from the ESPHome entity name, e.g.
+      // "B2500 - 2 - MyStore: Depth of Discharge" -> object id
+      // "b2500_-_2_-_mystore__depth_of_discharge". The trailing segment after
+      // "__" (the `id` capture below) is the sanitized entity name and must be
+      // matched exactly in the switch (e.g. "depth_of_discharge", not "dod").
       // Examples:
-      // sensor-d2-i60__temperatur_1
-      // text-a1-t56__szene
-      // switch-d1-01__power_out_1
-      // binary_sensor-d2-i12__pv_2_-_transparent
-      // number-d2-53__dod
+      // sensor-b2500_-_2_-_mystore__temperature_1
+      // number-b2500_-_2_-_mystore__depth_of_discharge
+      // switch-b2500_-_1_-_mystore__out_1_-_active
+      // text_sensor-b2500_-_1_-_mystore__mac_address
       const regexp = new RegExp(
         `^(sensor|switch|text(_sensor)?|number|binary_sensor|button)-b2500_-_(\\d)_-_(.*)__(.*)$`
       );
@@ -80,7 +84,7 @@ export class SolarStorageUI extends LitElement {
         case `last_response`:
           this.lastUpdate = data.value;
           break;
-        case `dod`:
+        case `depth_of_discharge`:
           this.dod = data.value;
           this.dodMin = data.min_value;
           this.dodMax = data.max_value;
@@ -141,7 +145,7 @@ export class SolarStorageUI extends LitElement {
         case `device_id`:
           this.deviceId = data.value;
           break;
-        case "mac":
+        case "mac_address":
           this.mac = data.value;
           break;
         case "ble_connected":

@@ -69,6 +69,17 @@ const server = http.createServer((req, res) => {
     send("state", { id: `sensor-b2500_-_1_-_x__out_1_-_power`, value: 120 });
     send("state", { id: `switch-b2500_-_1_-_x__out_1_-_active`, value: false });
 
+    // Entities whose object id (sanitized ESPHome name) must be matched exactly.
+    // Guards against regressions like `dod` vs `depth_of_discharge` and
+    // `mac` vs `mac_address`.
+    send("state", {
+      id: `number-b2500_-_1_-_x__depth_of_discharge`,
+      value: 80,
+      min_value: 0,
+      max_value: 90,
+    });
+    send("state", { id: `text_sensor-b2500_-_1_-_x__mac_address`, value: "AA:BB:CC:DD:EE:FF" });
+
     // A standard assumed-state switch in the entity table -> plain ❌/✔️ buttons.
     send("state", {
       id: "switch-test_relay",
@@ -147,6 +158,20 @@ try {
     if (ui.visible !== ONLINE_STORAGES.length)
       fail(`expected ${ONLINE_STORAGES.length} visible storages, got ${ui.visible}`);
     if (!ui.hiddenCollapsed) fail("storages without data did not collapse to display:none");
+
+    // (1b) sensor id mappings resolve (guards `dod`/`mac` object-id regressions)
+    const mapped = await page.evaluate(() => {
+      const s1 = Array.from(
+        document
+          .querySelector("esp-app")
+          .shadowRoot.querySelector("solar-storage-dashboard")
+          .shadowRoot.querySelectorAll("solar-storage-ui")
+      ).find((el) => el.getAttribute("number") === "1");
+      return { dod: s1.dod, dodMax: s1.dodMax, mac: s1.mac };
+    });
+    console.log("mapped sensors:", JSON.stringify(mapped));
+    if (mapped.dod !== 80) fail(`depth_of_discharge not mapped to dod (got ${mapped.dod})`);
+    if (mapped.mac !== "AA:BB:CC:DD:EE:FF") fail(`mac_address not mapped to mac (got ${mapped.mac})`);
 
     // (2) entity-table switch -> POST content type (issue #276)
     await page.evaluate(() => {
