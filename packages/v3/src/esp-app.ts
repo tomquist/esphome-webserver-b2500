@@ -237,26 +237,7 @@ export default class EspApp extends LitElement {
         </a>
         ${this.renderTitle()}
       </header>
-      <div class="flex-grid-half">
-        <section
-          id="col_entities"
-          class="col"
-        >
-          <solar-storage-ui number="1"></solar-storage-ui>
-        </section>
-        <section
-          id="col_entities"
-          class="col"
-        >
-          <solar-storage-ui number="2"></solar-storage-ui>
-        </section>
-        <section
-          id="col_entities"
-          class="col"
-        >
-          <solar-storage-ui number="3"></solar-storage-ui>
-        </section>
-      </div>
+      <solar-storage-dashboard></solar-storage-dashboard>
       <main class="flex-grid-half" @toggle-layout="${this._handleLayoutToggle}">
         <section
           id="col_entities"

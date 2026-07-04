@@ -8,9 +8,16 @@ function escapeRegex(str: string) {
   return str.replace(/[/\-\\^$*+?.()|[\]{}]/g, "\\$&");
 }
 
+// Maximum number of B2500 storages the dashboard can display. Kept in sync
+// with getMaxBleDevices() in the esphome-b2500 config generator.
+export const MAX_STORAGES = 9;
+
 @customElement("solar-storage-ui")
 export class SolarStorageUI extends LitElement {
   @property({ type: String }) number = "0";
+  // Reflected so the container grid can collapse storages that have not
+  // reported any data yet (see :host(:not([active])) below).
+  @property({ type: Boolean, reflect: true }) active = false;
 
   connectedCallback() {
     super.connectedCallback();
@@ -199,6 +206,10 @@ export class SolarStorageUI extends LitElement {
       :host {
         max-width: 100%;
         padding: 10px;
+      }
+      /* Collapse storages that have not reported any data yet. */
+      :host(:not([active])) {
+        display: none;
       }
 
       .tab-container {
@@ -504,6 +515,11 @@ export class SolarStorageUI extends LitElement {
     return html`<span class="cloud"></span>`;
   }
 
+  willUpdate() {
+    // A storage becomes visible once it has reported its device type.
+    this.active = this.deviceType != null;
+  }
+
   render() {
     if (this.deviceType == null) {
       return;
@@ -637,6 +653,37 @@ export class SolarStorageUI extends LitElement {
         @close=${() => (this.dodModalOpen = false)}
       ></input-modal>
     `;
+  }
+}
+
+// Container that lays out all potential B2500 storages in a responsive grid.
+// Every storage is mounted up front so it subscribes to the state stream from
+// the start (and never misses one-shot events such as device_type); storages
+// without data collapse themselves via :host(:not([active])), so only the
+// storages that actually report data are visible.
+@customElement("solar-storage-dashboard")
+export class SolarStorageDashboard extends LitElement {
+  static styles = css`
+    :host {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 450px));
+      justify-content: center;
+      gap: 16px;
+      margin: 8px 0;
+    }
+    @media (max-width: 700px) {
+      :host {
+        grid-template-columns: 1fr;
+      }
+    }
+  `;
+
+  render() {
+    return html`${Array.from(
+      { length: MAX_STORAGES },
+      (_, i) =>
+        html`<solar-storage-ui number="${i + 1}"></solar-storage-ui>`
+    )}`;
   }
 }
 
