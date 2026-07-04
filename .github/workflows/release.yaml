@@ -70,40 +70,74 @@ jobs:
           files: headers/**/*.h
           generate_release_notes: true
 
-  esphome-pr:
-    name: Make PR into ESPHome repo
+  esphome-b2500-pr:
+    name: Sync web UI into esphome-b2500
     runs-on: ubuntu-latest
-    environment: esphome
     needs:
       - release
     steps:
-      - name: Checkout esphome repo
+      # The esphome-b2500 firmware embeds the v3 web UI as v2/www.js (via
+      # js_include). This job rebuilds that bundle and opens/updates a PR in the
+      # consuming repo so the embedded UI stays in sync with this repo's sources.
+      #
+      # Requires a repo secret ESPHOME_B2500_SYNC_TOKEN: a token with
+      # contents:write + pull-requests:write on tomquist/esphome-b2500 (the
+      # default GITHUB_TOKEN cannot push to another repository). Until it is set,
+      # the job no-ops (green) instead of failing.
+      - name: Check for sync token
+        id: token
+        env:
+          SYNC_TOKEN: ${{ secrets.ESPHOME_B2500_SYNC_TOKEN }}
+        run: |
+          if [ -z "$SYNC_TOKEN" ]; then
+            echo "::warning::ESPHOME_B2500_SYNC_TOKEN not set; skipping esphome-b2500 sync."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Clone esphome-webserver-b2500
+        if: steps.token.outputs.present == 'true'
+        uses: actions/checkout@v4.1.1
+
+      - name: Set up Node.JS
+        if: steps.token.outputs.present == 'true'
+        uses: actions/setup-node@v4.0.2
+
+      - name: Install dependencies
+        if: steps.token.outputs.present == 'true'
+        run: npm install
+
+      - name: Build v3 web UI bundle
+        if: steps.token.outputs.present == 'true'
+        run: npm run xbuild
+        working-directory: packages/v3
+
+      - name: Checkout esphome-b2500
+        if: steps.token.outputs.present == 'true'
         uses: actions/checkout@v4.1.1
         with:
-          repository: esphome/esphome
-          ref: dev
+          repository: tomquist/esphome-b2500
+          token: ${{ secrets.ESPHOME_B2500_SYNC_TOKEN }}
+          path: esphome-b2500
 
-      - name: Download Artifacts
-        uses: actions/download-artifact@v4.1.4
-        with:
-          path: /tmp/headers
-          merge-multiple: true
+      - name: Update embedded web UI bundle
+        if: steps.token.outputs.present == 'true'
+        run: cp _static/v3/www.js esphome-b2500/v2/www.js
 
-      - name: Move headers into palce
-        run: |-
-          mv /tmp/headers/captive_portal/captive_index.h esphome/components/captive_portal/captive_index.h
-          mv /tmp/headers/v2/server_index_v2.h esphome/components/web_server/server_index_v2.h
-          mv /tmp/headers/v3/server_index_v3.h esphome/components/web_server/server_index_v3.h
-
-      - name: PR Changes
+      - name: Create/update PR in esphome-b2500
+        if: steps.token.outputs.present == 'true'
         uses: peter-evans/create-pull-request@v6.0.4
         with:
-          commit-message: "Update webserver local assets to ${{ needs.release.outputs.tag }}"
-          committer: esphomebot <68923041+esphomebot@users.noreply.github.com>
-          author: esphomebot <68923041+esphomebot@users.noreply.github.com>
-          branch: sync/webserver-assets
+          path: esphome-b2500
+          token: ${{ secrets.ESPHOME_B2500_SYNC_TOKEN }}
+          commit-message: "Update embedded web UI to ${{ needs.release.outputs.tag }}"
+          committer: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+          author: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+          branch: sync/webserver-www-js
           delete-branch: true
-          title: "Update webserver local assets to ${{ needs.release.outputs.tag }}"
-          body-path: .github/PULL_REQUEST_TEMPLATE.md
-          token: ${{ secrets.ESPHOME_WEBSERVER_SYNC_TOKEN }}
-          assignees: "@esphome/core"
+          title: "Update embedded web UI (www.js) to ${{ needs.release.outputs.tag }}"
+          body: |
+            Automated update of the embedded ESPHome web UI bundle (`v2/www.js`)
+            from [tomquist/esphome-webserver-b2500](https://github.com/tomquist/esphome-webserver-b2500)
+            @ ${{ github.sha }} (release `${{ needs.release.outputs.tag }}`).
