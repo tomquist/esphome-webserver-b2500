@@ -123,31 +123,43 @@ jobs:
       # URL to the freshly published release. No bundle blob is copied -- only a
       # one-line URL bump.
       #
-      # Requires a repo secret ESPHOME_B2500_SYNC_TOKEN: a token with
-      # contents:write + pull-requests:write on tomquist/esphome-b2500 (the
-      # default GITHUB_TOKEN cannot push to another repository). Until it is set,
-      # the job no-ops (green) instead of failing.
-      - name: Check for sync token
-        id: token
+      # Auth uses a GitHub App installed on tomquist/esphome-b2500 with
+      # Repository permissions Contents: read/write and Pull requests: read/write.
+      # Store its App ID and PEM private key as the SYNC_APP_ID and
+      # SYNC_APP_PRIVATE_KEY secrets. The App mints a short-lived installation
+      # token at run time (nothing to renew). Until the secrets are set, the job
+      # no-ops (green) instead of failing.
+      - name: Check for app credentials
+        id: creds
         env:
-          SYNC_TOKEN: ${{ secrets.ESPHOME_B2500_SYNC_TOKEN }}
+          APP_ID: ${{ secrets.SYNC_APP_ID }}
         run: |
-          if [ -z "$SYNC_TOKEN" ]; then
-            echo "::warning::ESPHOME_B2500_SYNC_TOKEN not set; skipping esphome-b2500 sync."
+          if [ -z "$APP_ID" ]; then
+            echo "::warning::SYNC_APP_ID not set; skipping esphome-b2500 sync."
             echo "present=false" >> "$GITHUB_OUTPUT"
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Mint installation token
+        id: app-token
+        if: steps.creds.outputs.present == 'true'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.SYNC_APP_ID }}
+          private-key: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
+          owner: tomquist
+          repositories: esphome-b2500
+
       - name: Checkout esphome-b2500
-        if: steps.token.outputs.present == 'true'
+        if: steps.creds.outputs.present == 'true'
         uses: actions/checkout@v4.1.1
         with:
           repository: tomquist/esphome-b2500
-          token: ${{ secrets.ESPHOME_B2500_SYNC_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Repoint pinned web UI URL
-        if: steps.token.outputs.present == 'true'
+        if: steps.creds.outputs.present == 'true'
         env:
           TAG: ${{ needs.release.outputs.tag }}
         run: |
@@ -155,10 +167,10 @@ jobs:
             src/template.jinja2 src/template_v2.jinja2
 
       - name: Create/update PR in esphome-b2500
-        if: steps.token.outputs.present == 'true'
+        if: steps.creds.outputs.present == 'true'
         uses: peter-evans/create-pull-request@v6.0.4
         with:
-          token: ${{ secrets.ESPHOME_B2500_SYNC_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
           commit-message: "Pin web UI to ${{ needs.release.outputs.tag }}"
           committer: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
           author: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
