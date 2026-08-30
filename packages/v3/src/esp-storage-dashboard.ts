@@ -49,14 +49,17 @@ const LEGACY_ID_RE =
   /^(sensor|switch|text_sensor|text|number|binary_sensor|button)-b2500_-_(\d+)_-_.*__(.*)$/;
 
 // Turn a raw state event into a ParsedEntity, or null if it is not a B2500
-// storage entity. Prefers the modern "name_id" (domain/device/name), so it works
+// storage entity. Prefers the hierarchical "domain/device/name" id, so it works
 // with ESPHome sub-devices and simplified entity names; falls back to the legacy
 // object-id format ("<domain>-b2500_-_<n>_-_<store>__<key>") for older firmware.
 export function parseStorageEntity(data: any): ParsedEntity | null {
   if (data == null || typeof data !== "object") return null;
 
-  const nameId: unknown = data.name_id;
-  if (typeof nameId === "string") {
+  // ESPHome up to 2026.7 sends the hierarchical form as "name_id" alongside the
+  // object-id "id"; 2026.8 dropped "name_id" and moved that form into "id".
+  // Object ids never contain a slash, so the slash tells the two apart.
+  const nameId: unknown = data.name_id ?? data.id;
+  if (typeof nameId === "string" && nameId.includes("/")) {
     const parts = nameId.split("/");
     // Sub-device entities are domain/device/name (>= 3 parts). Entities without
     // a device (domain/name) are global, not per-storage, and are ignored.
