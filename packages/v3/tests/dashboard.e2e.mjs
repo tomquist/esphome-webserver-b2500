@@ -9,7 +9,9 @@
 //      "domain/device/name" sent as `name_id` (<= 2026.7) and as `id` (>= 2026.8,
 //      which dropped `name_id`), plus the legacy object-id format.
 //   2. Sensor ids map correctly (guards `dod`/`mac` object-id regressions).
-//   3. Control POSTs carry `Content-Type: application/x-www-form-urlencoded`
+//   3. An event stream in which nothing parses (a future format change) is
+//      reported in the UI instead of silently rendering an empty dashboard.
+//   4. Control POSTs carry `Content-Type: application/x-www-form-urlencoded`
 //      (issue #276) and target the right endpoint: the hierarchical
 //      /{domain}/{device}/{name}/{action} for sub-devices (object ids collide
 //      across devices with simplified names), and the legacy object-id endpoint
@@ -229,6 +231,56 @@ try {
       fail("2026.8 id format: toggle did not POST the hierarchical endpoint");
     if (!posts.some((p) => p.url === "/switch/test_relay/turn_on"))
       fail("entity-table switch did not POST /switch/test_relay/turn_on");
+  }
+
+  // (4) A stream whose entities parse to nothing at all -- what an unhandled
+  // ESPHome format change looks like -- must say so rather than render nothing.
+  const brokenServer = http.createServer((req, res) => {
+    if (req.url.split("?")[0] === "/events") {
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      });
+      res.write(`event: ping\ndata: ${JSON.stringify({ title: "Broken", uptime: 1 })}\n\n`);
+      for (const key of ["device_type", "battery_level", "out_1_-_power"]) {
+        // A shape neither parser branch understands (no slash, no b2500 prefix).
+        res.write(
+          `event: state\ndata: ${JSON.stringify({ id: `sensor-future_format_${key}`, value: 1 })}\n\n`
+        );
+      }
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(fs.readFileSync(INDEX));
+  });
+  await new Promise((r) => brokenServer.listen(0, r));
+  const brokenPort = brokenServer.address().port;
+
+  try {
+    const page2 = await browser.newPage();
+    const warnings = [];
+    page2.on("console", (m) => m.type() === "warning" && warnings.push(m.text()));
+    await page2.goto(`http://localhost:${brokenPort}/`, { waitUntil: "load" });
+
+    const notice = await page2
+      .waitForFunction(
+        () =>
+          document
+            .querySelector("esp-app")
+            ?.shadowRoot?.querySelector("solar-storage-dashboard")
+            ?.shadowRoot?.querySelector(".unrecognized")?.textContent ?? false,
+        { timeout: 10000 }
+      )
+      .then((h) => h.jsonValue())
+      .catch(() => null);
+
+    if (!notice) fail("unrecognized event format was not reported in the UI");
+    else console.log("notice:", notice.replace(/\s+/g, " ").trim());
+    if (!warnings.some((w) => w.includes("no storage entities recognized")))
+      fail(`unrecognized event format was not warned about: ${JSON.stringify(warnings)}`);
+  } finally {
+    brokenServer.close();
   }
 } finally {
   await browser.close();
