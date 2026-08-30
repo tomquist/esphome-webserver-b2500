@@ -7,36 +7,43 @@ on:
       - dev
   pull_request:
 
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
-    name: Build ${{ matrix.name }}
+    name: Build
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build.yaml
+
+  # The B2500 storage dashboard is not upstream, and only this test exercises it:
+  # without it a change to the ESPHome event format (as in 2026.8, which dropped
+  # `name_id`) empties the dashboard while every build stays green.
+  dashboard:
+    name: B2500 storage dashboard
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - name: Captive Portal
-            directory: captive-portal
-          - name: Webserver v2
-            directory: v2
-          - name: Webserver v3
-            directory: v3
+    permissions:
+      contents: read
     steps:
       - name: Clone the repo
-        uses: actions/checkout@v4.1.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
       - name: Set up Node.JS
-        uses: actions/setup-node@v4.0.2
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
       - name: Install dependencies
-        run: npm install
-      - name: Build ${{ matrix.name }}
-        run: npm run build
-        working-directory: packages/${{ matrix.directory }}
-      # The B2500 storage dashboard is only exercised by this test; without it a
-      # change to the ESPHome event format (as in 2026.8) breaks the dashboard
-      # while the build stays green.
+        run: npm ci
+
       - name: Install Playwright browser
-        if: matrix.directory == 'v3'
         run: npx playwright install --with-deps chromium
+
       - name: Run dashboard E2E test
-        if: matrix.directory == 'v3'
         run: npm run test:e2e
         working-directory: packages/v3
