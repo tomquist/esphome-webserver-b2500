@@ -5,10 +5,13 @@
 // asserts the behaviour we care about at the HTTP boundary:
 //
 //   1. Storages are discovered dynamically, one card per ESPHome sub-device,
-//      working with BOTH the modern name_id/sub-device format (simplified entity
-//      names) AND the legacy object-id format (older firmware).
+//      working with ALL three id formats ESPHome has shipped: the hierarchical
+//      "domain/device/name" sent as `name_id` (<= 2026.7) and as `id` (>= 2026.8,
+//      which dropped `name_id`), plus the legacy object-id format.
 //   2. Sensor ids map correctly (guards `dod`/`mac` object-id regressions).
-//   3. Control POSTs carry `Content-Type: application/x-www-form-urlencoded`
+//   3. An event stream in which nothing parses (a future format change) is
+//      reported in the UI instead of silently rendering an empty dashboard.
+//   4. Control POSTs carry `Content-Type: application/x-www-form-urlencoded`
 //      (issue #276) and target the right endpoint: the hierarchical
 //      /{domain}/{device}/{name}/{action} for sub-devices (object ids collide
 //      across devices with simplified names), and the legacy object-id endpoint
@@ -86,6 +89,15 @@ const server = http.createServer((req, res) => {
     g("text_sensor", "Device Type", { value: "HMB" });
     g("number", "Depth of Discharge", { value: 55, min_value: 0, max_value: 90 });
 
+    // --- Device D: ESPHome >= 2026.8, which removed `name_id` and moved the
+    // hierarchical "domain/device/name" form into `id` (discussion #305).
+    const d = (domain, name, extra = {}) =>
+      send("state", { id: `${domain}/Dach/B2500 - 4 - Dach: ${name}`, ...extra });
+    d("text_sensor", "Device Type", { value: "HMB" });
+    d("sensor", "Battery Level", { value: 33 });
+    d("text_sensor", "Generation", { value: "1" });
+    d("switch", "Out 1 - Active", { value: false });
+
     // --- Device L: legacy object-id format, no name_id (older firmware).
     const l = (domain, key, extra = {}) =>
       send("state", { id: `${domain}-b2500_-_3_-_keller__${key}`, ...extra });
@@ -139,17 +151,21 @@ try {
         ).find((b) => b.textContent.includes("✔️"));
         const balkon = cards.find((c) => c.device === "Balkon");
         const garage = cards.find((c) => c.device === "Garage");
-        const outBtn = balkon &&
-          Array.from(balkon.shadowRoot.querySelectorAll("wattage-status-box"))
+        const dach = cards.find((c) => c.device === "Dach");
+        const outButton = (card) =>
+          card &&
+          Array.from(card.shadowRoot.querySelectorAll("wattage-status-box"))
             .find((b) => b.getAttribute("label") === "🔼 Out1")
             ?.shadowRoot?.querySelector("button");
-        if (cards.length < 3 || !relayBtn || !outBtn || !garage) return false;
+        if (cards.length < 4 || !relayBtn || !outButton(balkon) || !garage) return false;
+        if (!outButton(dach)) return false;
         return {
           devices: cards.map((c) => c.device),
           active: cards.map((c) => c.hasAttribute("active")),
           headers: cards.map((c) => c.shadowRoot.querySelector(".tab-header")?.textContent),
           balkon: { dod: balkon.dod, dodMax: balkon.dodMax, mac: balkon.mac, gen: balkon.deviceGeneration },
           garageDod: garage.dod,
+          dachBattery: dach.batteryPercentage,
         };
       },
       { timeout: 10000 }
@@ -162,10 +178,11 @@ try {
   } else {
     console.log("ui:", JSON.stringify(ui));
 
-    // (1) dynamic discovery: one card per sub-device, all three field formats
-    if (ui.devices.length !== 3) fail(`expected 3 storage cards, got ${ui.devices.length}`);
+    // (1) dynamic discovery: one card per sub-device, all id formats
+    if (ui.devices.length !== 4) fail(`expected 4 storage cards, got ${ui.devices.length}`);
     if (!ui.devices.includes("Balkon")) fail("modern simplified-name device 'Balkon' not discovered");
     if (!ui.devices.includes("Garage")) fail("modern legacy-name device 'Garage' not discovered");
+    if (!ui.devices.includes("Dach")) fail("ESPHome >= 2026.8 device 'Dach' (id without name_id) not discovered");
     if (!ui.devices.includes("#3")) fail("legacy object-id device '#3' not discovered");
     if (!ui.active.every(Boolean)) fail(`some storage card is not active: ${JSON.stringify(ui.active)}`);
     if (!ui.headers.includes("Balkon")) fail(`modern card header should be device name: ${ui.headers}`);
@@ -175,19 +192,23 @@ try {
     if (ui.balkon.dod !== 80) fail(`simplified: Depth of Discharge not mapped (got ${ui.balkon.dod})`);
     if (ui.balkon.mac !== "AA:BB:CC:DD:EE:FF") fail(`simplified: MAC Address not mapped (got ${ui.balkon.mac})`);
     if (ui.garageDod !== 55) fail(`legacy-name prefix not stripped: Depth of Discharge not mapped (got ${ui.garageDod})`);
+    if (ui.dachBattery !== 33) fail(`2026.8 id format: Battery Level not mapped (got ${ui.dachBattery})`);
 
     // (3a) modern sub-device toggle -> hierarchical, url-encoded endpoint
-    await page.evaluate(() => {
-      const balkon = Array.from(
-        document.querySelector("esp-app").shadowRoot
-          .querySelector("solar-storage-dashboard").shadowRoot
-          .querySelectorAll("solar-storage-ui")
-      ).find((c) => c.device === "Balkon");
-      Array.from(balkon.shadowRoot.querySelectorAll("wattage-status-box"))
-        .find((b) => b.getAttribute("label") === "🔼 Out1")
-        .shadowRoot.querySelector("button")
-        .click();
-    });
+    const clickOut1 = (device) =>
+      page.evaluate((name) => {
+        const card = Array.from(
+          document.querySelector("esp-app").shadowRoot
+            .querySelector("solar-storage-dashboard").shadowRoot
+            .querySelectorAll("solar-storage-ui")
+        ).find((c) => c.device === name);
+        Array.from(card.shadowRoot.querySelectorAll("wattage-status-box"))
+          .find((b) => b.getAttribute("label") === "🔼 Out1")
+          .shadowRoot.querySelector("button")
+          .click();
+      }, device);
+    await clickOut1("Balkon");
+    await clickOut1("Dach");
 
     // (3b) global entity-table switch -> POST content type (issue #276)
     await page.evaluate(() => {
@@ -206,8 +227,60 @@ try {
       fail(`POST(s) with wrong Content-Type: ${JSON.stringify(posts)}`);
     if (!posts.some((p) => p.url === "/switch/Balkon/Out%201%20-%20Active/turn_on"))
       fail("sub-device toggle did not POST the hierarchical endpoint");
+    if (!posts.some((p) => p.url === "/switch/Dach/B2500%20-%204%20-%20Dach%3A%20Out%201%20-%20Active/turn_on"))
+      fail("2026.8 id format: toggle did not POST the hierarchical endpoint");
     if (!posts.some((p) => p.url === "/switch/test_relay/turn_on"))
       fail("entity-table switch did not POST /switch/test_relay/turn_on");
+  }
+
+  // (4) A stream whose entities parse to nothing at all -- what an unhandled
+  // ESPHome format change looks like -- must say so rather than render nothing.
+  const brokenServer = http.createServer((req, res) => {
+    if (req.url.split("?")[0] === "/events") {
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      });
+      res.write(`event: ping\ndata: ${JSON.stringify({ title: "Broken", uptime: 1 })}\n\n`);
+      for (const key of ["device_type", "battery_level", "out_1_-_power"]) {
+        // A shape neither parser branch understands (no slash, no b2500 prefix).
+        res.write(
+          `event: state\ndata: ${JSON.stringify({ id: `sensor-future_format_${key}`, value: 1 })}\n\n`
+        );
+      }
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(fs.readFileSync(INDEX));
+  });
+  await new Promise((r) => brokenServer.listen(0, r));
+  const brokenPort = brokenServer.address().port;
+
+  try {
+    const page2 = await browser.newPage();
+    const warnings = [];
+    page2.on("console", (m) => m.type() === "warning" && warnings.push(m.text()));
+    await page2.goto(`http://localhost:${brokenPort}/`, { waitUntil: "load" });
+
+    const notice = await page2
+      .waitForFunction(
+        () =>
+          document
+            .querySelector("esp-app")
+            ?.shadowRoot?.querySelector("solar-storage-dashboard")
+            ?.shadowRoot?.querySelector(".unrecognized")?.textContent ?? false,
+        { timeout: 10000 }
+      )
+      .then((h) => h.jsonValue())
+      .catch(() => null);
+
+    if (!notice) fail("unrecognized event format was not reported in the UI");
+    else console.log("notice:", notice.replace(/\s+/g, " ").trim());
+    if (!warnings.some((w) => w.includes("no storage entities recognized")))
+      fail(`unrecognized event format was not warned about: ${JSON.stringify(warnings)}`);
+  } finally {
+    brokenServer.close();
   }
 } finally {
   await browser.close();

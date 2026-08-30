@@ -49,14 +49,17 @@ const LEGACY_ID_RE =
   /^(sensor|switch|text_sensor|text|number|binary_sensor|button)-b2500_-_(\d+)_-_.*__(.*)$/;
 
 // Turn a raw state event into a ParsedEntity, or null if it is not a B2500
-// storage entity. Prefers the modern "name_id" (domain/device/name), so it works
+// storage entity. Prefers the hierarchical "domain/device/name" id, so it works
 // with ESPHome sub-devices and simplified entity names; falls back to the legacy
 // object-id format ("<domain>-b2500_-_<n>_-_<store>__<key>") for older firmware.
 export function parseStorageEntity(data: any): ParsedEntity | null {
   if (data == null || typeof data !== "object") return null;
 
-  const nameId: unknown = data.name_id;
-  if (typeof nameId === "string") {
+  // ESPHome up to 2026.7 sends the hierarchical form as "name_id" alongside the
+  // object-id "id"; 2026.8 dropped "name_id" and moved that form into "id".
+  // Object ids never contain a slash, so the slash tells the two apart.
+  const nameId: unknown = data.name_id ?? data.id;
+  if (typeof nameId === "string" && nameId.includes("/")) {
     const parts = nameId.split("/");
     // Sub-device entities are domain/device/name (>= 3 parts). Entities without
     // a device (domain/name) are global, not per-storage, and are ignored.
@@ -743,6 +746,17 @@ export class SolarStorageUI extends LitElement {
 export class SolarStorageDashboard extends LitElement {
   // device -> (sensor key -> parsed entity). Insertion order = discovery order.
   @state() private _devices: Map<string, Map<string, ParsedEntity>> = new Map();
+  // Set once the state stream has gone quiet without a single entity parsing;
+  // see _armIdleCheck.
+  @state() private _unrecognized = false;
+
+  private _eventsSeen = 0;
+  private _idleTimer?: ReturnType<typeof setTimeout>;
+
+  // How long after the first state event to conclude that nothing in the stream
+  // is recognizable. ESPHome sends every entity at once when /events is opened,
+  // so anything this dashboard understands has arrived well inside this window.
+  static GRACE_MS = 3000;
 
   static styles = css`
     :host {
@@ -757,6 +771,15 @@ export class SolarStorageDashboard extends LitElement {
         grid-template-columns: 1fr;
       }
     }
+    .unrecognized {
+      grid-column: 1 / -1;
+      padding: 8px 12px;
+      border: 1px solid currentColor;
+      border-radius: 4px;
+      opacity: 0.7;
+      font-size: 0.9em;
+      text-align: center;
+    }
   `;
 
   connectedCallback() {
@@ -766,7 +789,27 @@ export class SolarStorageDashboard extends LitElement {
 
   disconnectedCallback() {
     window.source?.removeEventListener("state", this._onState);
+    if (this._idleTimer) clearTimeout(this._idleTimer);
     super.disconnectedCallback();
+  }
+
+  // An empty dashboard has two very different causes: no storage has reported
+  // yet, or the event format changed under us and nothing parses at all (as when
+  // ESPHome 2026.8 dropped `name_id`). The second one used to be invisible --
+  // the graph simply vanished -- so say it out loud. Armed once, by the first
+  // state event, and never rearmed: a stream of unparseable events must not keep
+  // pushing the verdict out of reach.
+  private _armGraceTimer() {
+    if (this._idleTimer !== undefined) return;
+    this._idleTimer = setTimeout(() => {
+      if (this._devices.size > 0) return;
+      this._unrecognized = true;
+      console.warn(
+        `[b2500] no storage entities recognized in ${this._eventsSeen} state ` +
+          `events -- the ESPHome event format may have changed. Please report ` +
+          `this at https://github.com/tomquist/esphome-b2500/issues`
+      );
+    }, SolarStorageDashboard.GRACE_MS);
   }
 
   private _onState = (e: Event) => {
@@ -776,6 +819,8 @@ export class SolarStorageDashboard extends LitElement {
     } catch {
       return;
     }
+    this._eventsSeen++;
+    this._armGraceTimer();
     const p = parseStorageEntity(data);
     if (!p || !KNOWN_STORAGE_KEYS.has(p.key)) return;
 
@@ -792,6 +837,17 @@ export class SolarStorageDashboard extends LitElement {
   };
 
   render() {
+    if (this._devices.size === 0) {
+      return this._unrecognized
+        ? html`<div class="unrecognized">
+            No B2500 storage recognized in ${this._eventsSeen} entity updates.
+            The web UI may not match this ESPHome version -- please
+            <a href="https://github.com/tomquist/esphome-b2500/issues"
+              >report it</a
+            >.
+          </div>`
+        : html``;
+    }
     return html`${[...this._devices.entries()].map(
       ([device, entities]) =>
         html`<solar-storage-ui

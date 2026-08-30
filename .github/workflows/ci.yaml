@@ -30,3 +30,13 @@ jobs:
       - name: Build ${{ matrix.name }}
         run: npm run build
         working-directory: packages/${{ matrix.directory }}
+      # The B2500 storage dashboard is only exercised by this test; without it a
+      # change to the ESPHome event format (as in 2026.8) breaks the dashboard
+      # while the build stays green.
+      - name: Install Playwright browser
+        if: matrix.directory == 'v3'
+        run: npx playwright install --with-deps chromium
+      - name: Run dashboard E2E test
+        if: matrix.directory == 'v3'
+        run: npm run test:e2e
+        working-directory: packages/v3
