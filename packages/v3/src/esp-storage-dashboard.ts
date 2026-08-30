@@ -578,14 +578,16 @@ export class SolarStorageUI extends LitElement {
     }
   }
 
+  // The setters only exist once the matching number entity has reported, and the
+  // modal can only be open if it has -- but the compiler does not know that.
   _handleChangeDoD(e: any) {
     this.dodModalOpen = false;
-    this.setDoD(e.detail);
+    this.setDoD?.(e.detail);
   }
 
   _handleChangeDischargeThreshold(e: any) {
     this.dischargeThresholdModalOpen = false;
-    this.setDischargeThreshold(e.detail);
+    this.setDischargeThreshold?.(e.detail);
   }
 
   _bluetoothIcon() {

@@ -4,72 +4,70 @@ on:
   push:
     branches:
       - main
+    # main only moves via release PRs from dev, but there is no reason to cut a
+    # release for a docs-only merge.
+    paths:
+      - packages/**
+      - scripts/**
+      - package.json
+      - package-lock.json
+      - tsconfig.json
+      - .nvmrc
+      - .github/workflows/release.yaml
+      - .github/workflows/build.yaml
   workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   build:
-    name: Build ${{ matrix.name }}
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - name: Captive Portal
-            directory: captive-portal
-          - name: Webserver v2
-            directory: v2
-          - name: Webserver v3
-            directory: v3
-    steps:
-      - name: Clone the repo
-        uses: actions/checkout@v4.1.1
-
-      - name: Set up Node.JS
-        uses: actions/setup-node@v4.0.2
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Build ${{ matrix.name }}
-        run: npm run build
-        working-directory: packages/${{ matrix.directory }}
-
-      - uses: actions/upload-artifact@v4.3.1
-        with:
-          name: ${{ matrix.name }}
-          path: _static/**/*.h
+    name: Build
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build.yaml
 
   release:
     name: Tag and Release
     runs-on: ubuntu-latest
+    # The paths filter only constrains the push trigger; workflow_dispatch can
+    # be run from any ref. Without this, dispatching from a feature branch cuts
+    # a real tag and release from unreviewed code.
+    if: github.ref == 'refs/heads/main'
     needs: build
+    # Upstream mints a token from the esphome org's GitHub App here; this fork
+    # has no such App, so the release is cut with the run's own token.
+    permissions:
+      contents: write
     outputs:
       tag: ${{ steps.create_tag.outputs.tag }}
+      url: ${{ steps.create_release.outputs.url }}
     steps:
-      # Checkout repo, create new git tag, and git release with artifacts
-      - name: Checkout the repo
-        uses: actions/checkout@v4.1.1
-
       - name: Create a new tag
         id: create_tag
-        run: echo tag=$(date +'%Y%m%d-%H%M%S') >> $GITHUB_OUTPUT
+        run: echo "tag=$(date +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
 
-      - name: Download Artifacts
-        uses: actions/download-artifact@v4.1.4
+      - name: Download artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          path: headers
+          path: release
           merge-multiple: true
-
-      - name: List files
-        run: ls -R headers
 
       - name: Create a release
         id: create_release
-        uses: softprops/action-gh-release@v2.0.4
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
         with:
           tag_name: ${{ steps.create_tag.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           name: Release ${{ steps.create_tag.outputs.tag }}
-          files: headers/**/*.h
+          files: |
+            release/**/*.h
+            release/webserver-v1.*
           generate_release_notes: true
+          fail_on_unmatched_files: true
 
   publish-pages:
     name: Publish www.js to GitHub Pages
@@ -88,13 +86,16 @@ jobs:
       # One-time setup: enable Pages for this repo
       # (Settings -> Pages -> Build and deployment -> Deploy from a branch -> gh-pages).
       - name: Clone repo
-        uses: actions/checkout@v4.1.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Node.JS
-        uses: actions/setup-node@v4.0.2
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Build v3 web UI bundle
         run: npm run xbuild
@@ -116,6 +117,9 @@ jobs:
   bump-b2500-url:
     name: Bump pinned web UI URL in esphome-b2500
     runs-on: ubuntu-latest
+    # Guard the outward-facing side effect: only release commits on main may
+    # open a PR in esphome-b2500.
+    if: github.ref == 'refs/heads/main'
     needs:
       - release
       - publish-pages

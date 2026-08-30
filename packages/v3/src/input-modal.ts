@@ -48,10 +48,11 @@ export class InputModal extends LitElement {
   get value() {
     return this.currentValue;
   }
-  set value(value: number) {
+  set value(value: number | "") {
     this.currentValue = value;
   }
-  @state() private currentValue: number = this.value;
+  // "" while the input is empty -- the box has to be clearable to be retypeable.
+  @state() private currentValue: number | "" = this.value;
 
   private _closeModal() {
     this.dispatchEvent(new CustomEvent("close"));
@@ -63,7 +64,8 @@ export class InputModal extends LitElement {
   }
 
   private _submitValue() {
-    console.log("submitting", this.currentValue);
+    // An empty box has no value to submit; POSTing it would send "set?value=".
+    if (this.currentValue === "") return;
     this.dispatchEvent(
       new CustomEvent("submit", { detail: this.currentValue })
     );
@@ -81,7 +83,6 @@ export class InputModal extends LitElement {
                   type="number"
                   .value=${String(this.currentValue)}
                   @input=${this._updateValue}
-                  placeholder=${this.placeholder}
                   min=${this.min}
                   max=${this.max}
                   autofocus
