@@ -151,6 +151,23 @@ export class EntityTable extends LitElement implements RestAction {
     "Configuration",
     "Diagnostic",
   ];
+  // Domains whose control is an input that needs horizontal room: a slider,
+  // dropdown, text/date field or one of the multi-row panels. Every other
+  // control (toggles, button rows) is only as wide as its buttons, so the name
+  // column is free to use the rest of the row.
+  private static WIDE_CONTROL_DOMAINS = [
+    "number",
+    "select",
+    "text",
+    "date",
+    "time",
+    "datetime",
+    "fan",
+    "light",
+    "climate",
+    "water_heater",
+    "infrared",
+  ];
 
   private groups: groupConfig[] = EntityTable._defaultGroups();
 
@@ -292,6 +309,16 @@ export class EntityTable extends LitElement implements RestAction {
     }
   }
 
+  // Layout hint for the value column: only rows with a width-hungry control
+  // reserve a share of the row (issue #308).
+  private _valueColumnClass(entity: entityConfig): string {
+    return this.has_controls &&
+      entity.has_action &&
+      EntityTable.WIDE_CONTROL_DOMAINS.includes(entity.domain)
+      ? "wide-control"
+      : "";
+  }
+
   hasAction(entity: entityConfig): boolean {
     return `render_${entity.domain}` in this._actionRenderer;
   }
@@ -399,7 +426,7 @@ export class EntityTable extends LitElement implements RestAction {
                     <div>
                       ${component.device ? `[${component.device}] ` : ""}${component.name}
                     </div>
-                    <div>
+                    <div class="${this._valueColumnClass(component)}">
                       ${this.has_controls && component.has_action
                         ? this.control(component)
                         : html`<div>${component.state}</div>`}

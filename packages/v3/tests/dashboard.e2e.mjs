@@ -16,6 +16,9 @@
 //      /{domain}/{device}/{name}/{action} for sub-devices (object ids collide
 //      across devices with simplified names), and the legacy object-id endpoint
 //      otherwise.
+//   5. Entity-table rows spend their width on the name rather than on an empty
+//      value column, so long entity names are not ellipsized while half the row
+//      sits unused next to them (issue #308).
 //
 // Run with: npm run test:e2e  (which builds first). Requires the Playwright
 // browsers to be installed (`npx playwright install chromium`).
@@ -35,6 +38,11 @@ if (!fs.existsSync(INDEX)) {
 }
 
 const posts = []; // control POSTs captured at the mock server (shared in-process)
+
+// Entity names long enough that the pre-fix layout (a fixed 40%/50% split)
+// ellipsized them even though the row had room to spare.
+const LONG_READONLY_NAME = "B2500 - 1 - Balkon: Total Battery Charging Energy";
+const LONG_SLIDER_NAME = "B2500 - 1 - Balkon: Output Power Limit Setting";
 
 const server = http.createServer((req, res) => {
   const url = req.url.split("?")[0];
@@ -103,6 +111,31 @@ const server = http.createServer((req, res) => {
       send("state", { id: `${domain}-b2500_-_3_-_keller__${key}`, ...extra });
     l("text_sensor", "device_type", { value: "HMA" });
     l("sensor", "battery_level", { value: 47 });
+
+    // Long-named global entities for the entity-table layout check (issue #308).
+    // Like the relay below they carry no sub-device, so the dashboard ignores
+    // them and only the entity table renders them.
+    send("state", {
+      id: "sensor-layout_probe_readonly",
+      name: LONG_READONLY_NAME,
+      domain: "sensor",
+      state: "61 %",
+      value: 61,
+      entity_category: 0,
+    });
+    send("state", {
+      id: "number-layout_probe_slider",
+      name: LONG_SLIDER_NAME,
+      domain: "number",
+      state: "80",
+      value: 80,
+      min_value: 0,
+      max_value: 90,
+      step: 1,
+      uom: "%",
+      mode: 0,
+      entity_category: 0,
+    });
 
     // A standard global assumed-state switch in the entity table (issue #276);
     // it has no sub-device, so the dashboard ignores it.
@@ -281,6 +314,52 @@ try {
       fail(`unrecognized event format was not warned about: ${JSON.stringify(warnings)}`);
   } finally {
     brokenServer.close();
+  }
+
+  // (5) Row layout: the name column may only be ellipsized when the row really
+  // is too narrow, not because a two-character state reserved half of it.
+  const layout = await page.evaluate(
+    ([readonlyName, sliderName]) => {
+      const table = document
+        .querySelector("esp-app")
+        .shadowRoot.querySelector("esp-entity-table");
+      const measure = (wanted) => {
+        const row = Array.from(
+          table.shadowRoot.querySelectorAll(".entity-row")
+        ).find((r) => r.children[1]?.textContent.trim() === wanted);
+        if (!row) return null;
+        const [, name, value] = row.children;
+        return {
+          nameWidth: name.clientWidth,
+          nameNeeded: name.scrollWidth,
+          valueWidth: value.clientWidth,
+        };
+      };
+      return { readonly: measure(readonlyName), slider: measure(sliderName) };
+    },
+    [LONG_READONLY_NAME, LONG_SLIDER_NAME]
+  );
+  console.log("layout:", JSON.stringify(layout));
+
+  if (!layout.readonly || !layout.slider) {
+    fail(`layout probe rows did not render: ${JSON.stringify(layout)}`);
+  } else {
+    // A short state must not push the name into an ellipsis.
+    if (layout.readonly.nameNeeded > layout.readonly.nameWidth + 1)
+      fail(
+        `read-only row truncates its name with ${
+          layout.readonly.valueWidth
+        }px of value column next to it: ${JSON.stringify(layout.readonly)}`
+      );
+    // ...but a control still has to be wide enough to be usable.
+    if (layout.slider.valueWidth < 150)
+      fail(
+        `slider row control column shrank to ${layout.slider.valueWidth}px: ${JSON.stringify(layout.slider)}`
+      );
+    if (layout.slider.nameWidth < layout.readonly.nameWidth / 2)
+      fail(
+        `slider row name column starved at ${layout.slider.nameWidth}px: ${JSON.stringify(layout.slider)}`
+      );
   }
 } finally {
   await browser.close();
